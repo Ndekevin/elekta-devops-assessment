@@ -19,7 +19,19 @@ variable "location" {
 variable "vnet_address_space" {
     description = " Address prefix for Subnet"
     type = string
+    default = "10.0.0.0/16"
+}
+
+variable "subnet_address_prefix" {
+    description = " Address prefix for Subnet"
+    type = string
     default = "10.0.1.0/24"
+}
+
+variable "vm_size" {
+    description = "Size of the Virtual Machine"
+    type = string
+    default = "Standard_B2s"
 }
 
 variable "admin_username" {
