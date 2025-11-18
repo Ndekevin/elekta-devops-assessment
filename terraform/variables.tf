@@ -13,7 +13,7 @@ variable "resource_group_name" {
 variable "location" {
   description = "Azure region for resources"
   type        = string
-  default     = "eastus"
+  default     = "australiaeast"
 }
 
 variable "vnet_address_space" {
@@ -31,7 +31,7 @@ variable "subnet_address_prefix" {
 variable "vm_size" {
   description = "Size of the Virtual Machine"
   type        = string
-  default     = "Standard_D2ads_v5"
+  default     = "Standard_B2s"
 }
 
 variable "admin_username" {
