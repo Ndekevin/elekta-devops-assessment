@@ -31,7 +31,7 @@ variable "subnet_address_prefix" {
 variable "vm_size" {
   description = "Size of the Virtual Machine"
   type        = string
-  default     = "Standard_B1s"
+  default     = "Standard_D2ads_v5"
 }
 
 variable "admin_username" {
