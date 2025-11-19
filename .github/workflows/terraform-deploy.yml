@@ -57,7 +57,7 @@ jobs:
         run: |
           terraform init \
             -backend-config="resource_group_name=rg-terraform-state" \
-            -backend-config="storage_account_name=tfstatestgElekta" \
+            -backend-config="storage_account_name=tfstatestgelekta" \
             -backend-config="container_name=tfstate" \
             -backend-config="key=prod.terraform.tfstate"
 
