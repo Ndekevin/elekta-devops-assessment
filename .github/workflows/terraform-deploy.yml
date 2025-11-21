@@ -308,7 +308,7 @@ jobs:
           az network vnet list --resource-group elekta-devops-test --output table
         
           echo "Verifying subnet..."
-          az network vnet subnet list --resource-group elekta-devops-test --vnet-name vnet-prod --output table
+          az network vnet subnet list --resource-group elekta-devops-test --vnet-name vnet-elekta-devops-test --output table
         
           echo "Verifying Network Security Group..."
           az network nsg list --resource-group elekta-devops-test --output table
