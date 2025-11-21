@@ -101,7 +101,12 @@ terraform apply tfplan
 Once the repository is pushed to GitHub:
 
 1. **Pull Requests**: Triggers `terraform plan` and comments results on PR
-2. **Merge to main**: Triggers full `terraform apply` automatically
+2. **Merge to main**: Triggers `terraform apply` (may require manual approval in GitHub Environments if configured)
+
+**Pipeline Stages:**
+- **Validate**: Checks Terraform syntax and formatting
+- **Plan**: Generates execution plan and uploads as artifact
+- **Apply**: Deploys infrastructure changes (manual approval recommended for production)
 
 Monitor pipeline at: **GitHub Repository → Actions tab**
 

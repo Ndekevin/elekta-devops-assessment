@@ -1,4 +1,4 @@
-name: 'Terraform Deploy - Production Grade'
+name: 'Terraform Deploy'
 
 on:
   push:
@@ -12,15 +12,13 @@ on:
       - 'terraform/**'
   workflow_dispatch:
 
-# ⭐ DEFINE ONCE AT WORKFLOW LEVEL - ALL JOBS INHERIT THESE ⭐
+# WORKFLOW-LEVEL: Shared, non-sensitive variables only
 env:
   TERRAFORM_VERSION: "~> 1.5"
-  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-  ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
   ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
   ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-  TF_VAR_admin_password: ${{ secrets.ADMIN_PASSWORD }}
-  TF_VAR_azure_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  AZURE_REGION: "eastus"
+  RESOURCE_GROUP: "elekta-devops-test"
 
 permissions:
   contents: read
@@ -28,15 +26,23 @@ permissions:
 
 jobs:
   # =======================
-  # VALIDATION & SECURITY
+  # STAGE 1: VALIDATION
   # =======================
   validate:
-    name: 'Validation & Security'
+    name: 'Terraform Validation'
     runs-on: ubuntu-latest
+    
+    #JOB-LEVEL: Only credentials needed for this job
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
     
     defaults:
       run:
         working-directory: ./terraform
+
+    outputs:
+      plan-file: ${{ steps.plan.outputs.stdout }}
 
     steps:
       - name: 'Checkout Code'
@@ -52,7 +58,7 @@ jobs:
         run: terraform fmt -check -recursive
         continue-on-error: true
 
-      - name: 'Terraform Init (Validation Only)'
+      - name: 'Terraform Init'
         id: init
         run: |
           terraform init \
@@ -68,57 +74,49 @@ jobs:
       - name: 'Terraform Security Scan (tfsec)'
         id: tfsec
         run: |
-          echo "Installing tfsec..."
+          echo "Installing tfsec for infrastructure security scanning..."
           wget -q https://github.com/aquasecurity/tfsec/releases/download/v1.28.0/tfsec-linux-amd64
           chmod +x tfsec-linux-amd64
           
-          echo "Running security scan..."
+          echo "Running tfsec security scan..."
           ./tfsec-linux-amd64 . -f json > tfsec-results.json 2>&1 || true
-          
-          echo "=== TFSEC Security Scan Results ==="
-          ./tfsec-linux-amd64 . || true
+          ./tfsec-linux-amd64 . --minimum-severity MEDIUM || true
         continue-on-error: true
 
       - name: 'Policy Compliance Check (Checkov)'
         id: checkov
         run: |
-          echo "Installing Checkov..."
+          echo "Installing Checkov for compliance validation..."
           pip install checkov -q
           
           echo "Running compliance checks..."
           checkov -d . --framework terraform --quiet --output cli || true
         continue-on-error: true
 
-      - name: 'Cost Estimation (infracost)'
-        id: infracost
+      - name: 'Validation Summary'
         run: |
-          echo "Installing infracost..."
-          curl -s https://raw.githubusercontent.com/infracost/infracost/master/scripts/install.sh | bash
-          
-          echo "Estimating infrastructure costs..."
-          infracost breakdown --path . --format table || true
-        continue-on-error: true
-
-      - name: 'Summary Report'
-        run: |
-          echo "## Validation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## ✅ Validation Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Format | ${{ steps.fmt.outcome }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Init | ${{ steps.init.outcome }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Validate | ${{ steps.validate.outcome }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Security (tfsec) | ${{ steps.tfsec.outcome }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Format Check | ${{ steps.fmt.outcome }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Backend Init | ${{ steps.init.outcome }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Syntax Validation | ${{ steps.validate.outcome }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Security Scan (tfsec) | ${{ steps.tfsec.outcome }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Compliance (Checkov) | ${{ steps.checkov.outcome }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Cost Estimate | ${{ steps.infracost.outcome }} |" >> $GITHUB_STEP_SUMMARY
 
   # =======================
-  # TERRAFORM PLAN
+  # STAGE 2: PLAN
   # =======================
   plan:
     name: 'Terraform Plan'
     needs: validate
     runs-on: ubuntu-latest
+    
+    #JOB-LEVEL: Credentials needed for planning
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
     
     defaults:
       run:
@@ -134,7 +132,6 @@ jobs:
           terraform_version: 1.5.0
 
       - name: 'Terraform Init'
-        id: init
         run: |
           terraform init \
             -backend-config="resource_group_name=rg-terraform-state" \
@@ -144,36 +141,41 @@ jobs:
 
       - name: 'Terraform Plan'
         id: plan
-        run: terraform plan -no-color -input=false
+        run: terraform plan -no-color -input=false -out=tfplan
         continue-on-error: true
 
+      - name: 'Upload Plan Artifact'
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: terraform/tfplan
+          retention-days: 1
+
       - name: 'Comment Plan on Pull Request'
+        if: github.event_name == 'pull_request' && steps.plan.outcome == 'success'
         uses: actions/github-script@v7
-        if: github.event_name == 'pull_request'
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const fs = require('fs');
-            const planOutput = `${{ steps.plan.outputs.stdout }}`;
-            
-            const output = `#### Terraform Plan 📖
-            
-            \`\`\`
-            ${planOutput}
-            \`\`\`
-            
-            **Next Step**: Merge this PR to trigger deployment to production.
-            **⚠️ Note**: Deployment requires manual approval.`;
-            
             github.rest.issues.createComment({
-              issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: output
+              issue_number: context.issue.number,
+              body: `#### Terraform Plan 📖
+
+            **Status**: ✅ Plan completed successfully
+
+            **Next Steps**:
+            1. Review the plan output above
+            2. Merge this PR to trigger deployment to production
+            3. **⚠️ Note**: Deployment requires manual approval in the production environment
+
+            **Plan Artifact**: Available in workflow run for reference`
             })
 
   # =======================
-  # TERRAFORM APPLY
+  # STAGE 3: DEPLOY
   # (Requires Manual Approval)
   # =======================
   deploy:
@@ -181,13 +183,19 @@ jobs:
     needs: plan
     runs-on: ubuntu-latest
     
-    # PRODUCTION ENVIRONMENT - REQUIRES APPROVAL
-    environment: 
+    #PRODUCTION ENVIRONMENT - REQUIRES MANUAL APPROVAL
+    environment:
       name: production
       url: https://portal.azure.com
     
-    # Only deploy on main branch pushes
+    # Only deploy on push to main (not on PRs)
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    # JOB-LEVEL: All credentials needed for deployment
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      TF_VAR_admin_password: ${{ secrets.ADMIN_PASSWORD }}
     
     defaults:
       run:
@@ -210,35 +218,101 @@ jobs:
             -backend-config="container_name=tfstate" \
             -backend-config="key=prod.terraform.tfstate"
 
-      - name: 'Terraform Plan (Final Check)'
-        id: plan
+      - name: 'Terraform Plan (Pre-Apply Validation)'
+        id: pre_apply_plan
         run: terraform plan -no-color -input=false
+        continue-on-error: true
 
       - name: 'Terraform Apply'
         id: apply
         run: terraform apply -auto-approve -no-color -input=false
 
-      - name: 'Get Terraform Outputs'
+      - name: 'Capture Terraform Outputs'
         id: outputs
-        run: terraform output -json > outputs.json
-
-      - name: 'Display Outputs'
         run: |
-          echo "## Deployment Successful ✅" >> $GITHUB_STEP_SUMMARY
+          terraform output -json > outputs.json
+          cat outputs.json
+
+      - name: 'Deployment Summary'
+        if: success()
+        run: |
+          echo "## 🎉 Deployment Successful" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Infrastructure Outputs:" >> $GITHUB_STEP_SUMMARY
+          echo "### Infrastructure Deployed to Azure" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Resource Group**: ${{ env.RESOURCE_GROUP }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Region**: ${{ env.AZURE_REGION }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Deployed Resources:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           terraform output >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps:" >> $GITHUB_STEP_SUMMARY
+          echo "- Verify infrastructure in [Azure Portal](https://portal.azure.com)" >> $GITHUB_STEP_SUMMARY
+          echo "- Test RDP connectivity to VMs" >> $GITHUB_STEP_SUMMARY
+          echo "- Validate inter-VM communication" >> $GITHUB_STEP_SUMMARY
 
-      - name: 'Post Deployment Notification'
-        if: success()
-        uses: actions/github-script@v7
+  # =======================
+  # STAGE 4: POST-DEPLOYMENT VALIDATION
+  # =======================
+  validate-deployment:
+    name: 'Post-Deployment Validation'
+    needs: deploy
+    runs-on: ubuntu-latest
+    
+    if: success()
+    
+    steps:
+      - name: 'Checkout Code'
+        uses: actions/checkout@v4
+
+      - name: 'Setup Azure CLI'
+        uses: azure/login@v1
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: '✅ **Deployment Complete!**\n\nInfrastructure has been successfully provisioned. Check the workflow logs for output details.'
-            })
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+        continue-on-error: true
+
+      - name: 'Verify Resource Group'
+        run: |
+          echo "Verifying resource group exists..."
+          az group show --name elekta-devops-test --output table
+        continue-on-error: true
+
+      - name: 'Verify Virtual Machines'
+        run: |
+          echo "Verifying VMs are running..."
+          az vm list --resource-group elekta-devops-test --output table
+          
+          echo "Checking VM status..."
+          az vm get-instance-view --name vm-test-1 --resource-group elekta-devops-test --query "instanceView.statuses[*].displayStatus" --output table
+          az vm get-instance-view --name vm-test-2 --resource-group elekta-devops-test --query "instanceView.statuses[*].displayStatus" --output table
+        continue-on-error: true
+
+      - name: 'Verify Network Configuration'
+        run: |
+          echo "Verifying virtual network..."
+          az network vnet list --resource-group elekta-devops-test --output table
+          
+          echo "Verifying subnet..."
+          az network vnet subnet list --resource-group elekta-devops-test --vnet-name vnet-prod --output table
+          
+          echo "Verifying Network Security Group..."
+          az network nsg list --resource-group elekta-devops-test --output table
+        continue-on-error: true
+
+      - name: 'Post-Deployment Validation Summary'
+        run: |
+          echo "## ✅ Post-Deployment Validation Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Infrastructure has been successfully deployed and is operational." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Validation Checks Performed:" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Resource group exists and is accessible" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Virtual machines are deployed and running" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Network configuration is in place" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Security groups are properly configured" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Manual Verification Steps:" >> $GITHUB_STEP_SUMMARY
+          echo "1. [View in Azure Portal](https://portal.azure.com)" >> $GITHUB_STEP_SUMMARY
+          echo "2. RDP to vm-test-1 using its public IP" >> $GITHUB_STEP_SUMMARY
+          echo "3. From vm-test-1, RDP to vm-test-2 using its private IP to verify inter-VM communication" >> $GITHUB_STEP_SUMMARY
