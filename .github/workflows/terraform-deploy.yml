@@ -266,18 +266,29 @@ jobs:
     name: 'Post-Deployment Validation'
     needs: deploy
     runs-on: ubuntu-latest
-    
+  
     if: success()
-    
+  
+    #Use environment variables you already have
+    env:
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  
     steps:
       - name: 'Checkout Code'
         uses: actions/checkout@v4
 
       - name: 'Setup Azure CLI'
-        uses: azure/login@v1
+        uses: azure/setup-azure-cli@v3
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-        continue-on-error: true
+          azcliversion: 'latest'
+
+      - name: 'Authenticate to Azure'
+        run: |
+          az login --service-principal \
+            -u ${{ secrets.AZURE_CLIENT_ID }} \
+            -p ${{ secrets.AZURE_CLIENT_SECRET }} \
+            --tenant ${{ secrets.AZURE_TENANT_ID }}
 
       - name: 'Verify Resource Group'
         run: |
@@ -289,7 +300,7 @@ jobs:
         run: |
           echo "Verifying VMs are running..."
           az vm list --resource-group elekta-devops-test --output table
-          
+        
           echo "Checking VM status..."
           az vm get-instance-view --name vm-test-1 --resource-group elekta-devops-test --query "instanceView.statuses[*].displayStatus" --output table
           az vm get-instance-view --name vm-test-2 --resource-group elekta-devops-test --query "instanceView.statuses[*].displayStatus" --output table
@@ -299,10 +310,10 @@ jobs:
         run: |
           echo "Verifying virtual network..."
           az network vnet list --resource-group elekta-devops-test --output table
-          
+        
           echo "Verifying subnet..."
           az network vnet subnet list --resource-group elekta-devops-test --vnet-name vnet-prod --output table
-          
+        
           echo "Verifying Network Security Group..."
           az network nsg list --resource-group elekta-devops-test --output table
         continue-on-error: true
@@ -318,8 +329,3 @@ jobs:
           echo "- ✅ Virtual machines are deployed and running" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ Network configuration is in place" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ Security groups are properly configured" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Manual Verification Steps:" >> $GITHUB_STEP_SUMMARY
-          echo "1. [View in Azure Portal](https://portal.azure.com)" >> $GITHUB_STEP_SUMMARY
-          echo "2. RDP to vm-test-1 using its public IP" >> $GITHUB_STEP_SUMMARY
-          echo "3. From vm-test-1, RDP to vm-test-2 using its private IP to verify inter-VM communication" >> $GITHUB_STEP_SUMMARY
